@@ -1,0 +1,42 @@
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+ENV/
+.venv/
+venv/
+env/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Tooling and IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local media files (inputs/outputs)
+imgIn/*
+imgOut/*
+videoIn/*
+videoOut/*
+videoOut2/*
+
+# Keep folder placeholders
+!imgIn/.gitkeep
+!imgOut/.gitkeep
+!videoIn/.gitkeep
+!videoOut/.gitkeep
+!videoOut2/.gitkeep
