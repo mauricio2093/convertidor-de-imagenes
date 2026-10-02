@@ -19,7 +19,8 @@ if (-not (Test-Path $python)) {
     python -m venv $venvPath
 }
 
-& $python -c "import PIL" 2>$null
+# No redirigir stderr: con ErrorActionPreference=Stop, PowerShell 5.1 lo trata como error fatal
+& $python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('PIL') else 1)"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Instalando dependencias..." -ForegroundColor Cyan
     & $python -m pip install -r (Join-Path $PSScriptRoot "requirements.txt")
