@@ -24,18 +24,21 @@ VIDEO_IN = BASE / "videoIn"
 VIDEO_OUT = BASE / "videoOut"
 VIDEO_OUT2 = BASE / "videoOut2"
 
-OUTPUT_EXT = {"jpeg": ".jpeg", "webp": ".webp", "png": ".png"}
+OUTPUT_EXT = {"jpeg": ".jpeg", "webp": ".webp", "avif": ".avif", "png": ".png"}
 SOURCE_EXTS = {
     "png": {".png"},
     "jpeg": {".jpg", ".jpeg"},
     "webp": {".webp"},
-    "any": {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"},
+    "avif": {".avif"},
+    "any": {".png", ".jpg", ".jpeg", ".webp", ".avif", ".bmp", ".tif", ".tiff"},
 }
-DEFAULT_QUALITY = 85
+# La escala de AVIF no equivale a la de JPEG/WEBP: 60 da una fidelidad comparable
+DEFAULT_QUALITY = {"jpeg": 85, "webp": 85, "avif": 60}
 DEFAULT_PREFIX = "Y2meta.app"
 # Con tan pocos archivos, arrancar procesos cuesta mas de lo que ahorra
 SERIAL_THRESHOLD = 3
 MAX_WORKERS = 61  # limite de ProcessPoolExecutor en Windows
+WEBP_METHOD = 4
 # None = metodo predeterminado de la plataforma (spawn en Windows y macOS)
 START_METHOD = None
 
@@ -100,7 +103,7 @@ def _prepare(img, fmt, Image):
             background.paste(rgba, mask=rgba.getchannel("A"))
             return background
         return img.convert("RGB")
-    if fmt == "webp":
+    if fmt in ("webp", "avif"):
         return img.convert("RGBA" if _has_alpha(img) else "RGB")
     if img.mode in ("CMYK", "YCbCr", "LAB", "HSV"):
         return img.convert("RGB")
@@ -168,6 +171,10 @@ def _convert_one(task):
         partial = dest.with_name(dest.name + ".part")
         try:
             with Image.open(src) as img:
+                # El perfil de color solo sigue siendo valido si el origen ya era RGB
+                icc = img.info.get("icc_profile") if img.mode in ("RGB", "RGBA", "P") else None
+                if icc:
+                    save_args = {**save_args, "icc_profile": icc}
                 if max_size and img.format == "JPEG":
                     # Decodificar ya reducido (con margen x2 para no perder calidad)
                     img.draft(None, (max_size * 2, max_size * 2))
@@ -210,7 +217,19 @@ def _run_tasks(tasks, jobs):
         pool.shutdown(wait=True, cancel_futures=True)
 
 
-def convert_images(in_dir, out_dir, fmt, source="any", quality=DEFAULT_QUALITY,
+def encoder_args(fmt, quality=None, lossless=False, compress_level=9):
+    if fmt == "png":
+        # Pillow ignora compress_level cuando optimize=True (fuerza el 9)
+        return {"optimize": compress_level == 9, "compress_level": compress_level}
+    args = {"quality": quality or DEFAULT_QUALITY[fmt]}
+    if fmt == "jpeg":
+        args.update(optimize=True)
+    elif fmt == "webp":
+        args.update(lossless=lossless, method=WEBP_METHOD)
+    return args
+
+
+def convert_images(in_dir, out_dir, fmt, source="any", quality=None,
                    lossless=False, compress_level=9, jobs=None, force=False, max_size=None):
     _load_pillow()
     exts = SOURCE_EXTS[source]
@@ -223,13 +242,7 @@ def convert_images(in_dir, out_dir, fmt, source="any", quality=DEFAULT_QUALITY,
         return 0
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if fmt == "jpeg":
-        save_args = {"quality": quality, "optimize": True}
-    elif fmt == "webp":
-        save_args = {"quality": quality, "lossless": lossless}
-    else:
-        save_args = {"optimize": True, "compress_level": compress_level}
-
+    save_args = encoder_args(fmt, quality, lossless, compress_level)
     plan = plan_outputs(files, out_dir, fmt)
     tasks = [(src, dest, fmt, save_args, max_size) for src, dest in plan
              if force or not is_up_to_date(src, dest)]
@@ -343,11 +356,11 @@ def menu():
         if choice == "0":
             return 0
         if choice == "1":
-            convert_images(IMG_IN, IMG_OUT, "jpeg", "png", _ask_int("Calidad (1-100)", DEFAULT_QUALITY, 1, 100))
+            convert_images(IMG_IN, IMG_OUT, "jpeg", "png", _ask_int("Calidad (1-100)", DEFAULT_QUALITY["jpeg"], 1, 100))
         elif choice in ("2", "3", "4"):
             source = {"2": "png", "3": "jpeg", "4": "any"}[choice]
             lossless = _ask_yes("¿Sin perdida (lossless)?")
-            quality = DEFAULT_QUALITY if lossless else _ask_int("Calidad (1-100)", DEFAULT_QUALITY, 1, 100)
+            quality = None if lossless else _ask_int("Calidad (1-100)", DEFAULT_QUALITY["webp"], 1, 100)
             convert_images(IMG_IN, IMG_OUT, "webp", source, quality, lossless)
         elif choice == "5":
             convert_images(IMG_IN, IMG_OUT, "png", "png")
@@ -367,6 +380,12 @@ def _ext(value):
     return "." + value.lower().lstrip(".")
 
 
+def _quality(value):
+    if not value.isdigit() or not 1 <= int(value) <= 100:
+        raise argparse.ArgumentTypeError(f"debe ser un entero entre 1 y 100 (recibido: {value!r})")
+    return int(value)
+
+
 def _positive_int(value):
     if not value.isdigit() or int(value) < 1:
         raise argparse.ArgumentTypeError(f"debe ser un entero mayor o igual a 1 (recibido: {value!r})")
@@ -377,10 +396,11 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Herramientas por lotes para imagenes y videos.")
     sub = parser.add_subparsers(dest="command")
 
-    p = sub.add_parser("convert", help="Convertir imagenes a JPEG, WEBP o PNG")
+    p = sub.add_parser("convert", help="Convertir imagenes a JPEG, WEBP, AVIF o PNG")
     p.add_argument("--to", dest="fmt", choices=sorted(OUTPUT_EXT), required=True)
     p.add_argument("--from", dest="source", choices=sorted(SOURCE_EXTS), default="any")
-    p.add_argument("--quality", type=int, default=DEFAULT_QUALITY, help="1-100 (JPEG/WEBP)")
+    p.add_argument("--quality", type=_quality,
+                   help="1-100; por defecto 85 en JPEG/WEBP y 60 en AVIF (no aplica a PNG)")
     p.add_argument("--lossless", action="store_true", help="WEBP sin perdida")
     p.add_argument("--in", dest="in_dir", type=Path, default=IMG_IN)
     p.add_argument("--out", dest="out_dir", type=Path, default=IMG_OUT)
@@ -414,7 +434,10 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "convert" and args.lossless and args.fmt != "webp":
+        parser.error("--lossless solo aplica a --to webp")
     if args.command is None:
         try:
             return menu()
