@@ -137,6 +137,14 @@ def plan_outputs(files, out_dir, fmt):
     return plan
 
 
+def is_up_to_date(src, dest):
+    """El destino existe y no es mas antiguo que el origen."""
+    try:
+        return dest.stat().st_mtime >= src.stat().st_mtime
+    except OSError:
+        return False
+
+
 def _convert_one(task):
     """Convierte un archivo; corre en un worker, asi que no decide nombres ni comparte estado."""
     src, dest, fmt, save_args = task
@@ -144,9 +152,16 @@ def _convert_one(task):
         from PIL import Image, ImageOps
         if dest.resolve() == src.resolve():
             raise ValueError("la salida pisaria el archivo de entrada (usa otra carpeta --out)")
-        with Image.open(src) as img:
-            img = ImageOps.exif_transpose(img)
-            _prepare(img, fmt, Image).save(dest, fmt.upper(), **save_args)
+        # Escribir a un temporal y renombrar: un fallo a medias no deja un destino
+        # corrupto que luego se omitiria por "ya convertido"
+        partial = dest.with_name(dest.name + ".part")
+        try:
+            with Image.open(src) as img:
+                img = ImageOps.exif_transpose(img)
+                _prepare(img, fmt, Image).save(partial, fmt.upper(), **save_args)
+            os.replace(partial, dest)
+        finally:
+            partial.unlink(missing_ok=True)
         before, after = src.stat().st_size, dest.stat().st_size
         change = (after - before) / before * 100 if before else 0
         return True, (f"{src.name} -> {dest.name}  "
@@ -180,7 +195,7 @@ def _run_tasks(tasks, jobs):
 
 
 def convert_images(in_dir, out_dir, fmt, source="any", quality=DEFAULT_QUALITY,
-                   lossless=False, compress_level=9, jobs=None):
+                   lossless=False, compress_level=9, jobs=None, force=False):
     _load_pillow()
     exts = SOURCE_EXTS[source]
     if source == "any":
@@ -199,12 +214,17 @@ def convert_images(in_dir, out_dir, fmt, source="any", quality=DEFAULT_QUALITY,
     else:
         save_args = {"optimize": True, "compress_level": compress_level}
 
-    tasks = [(src, dest, fmt, save_args) for src, dest in plan_outputs(files, out_dir, fmt)]
+    plan = plan_outputs(files, out_dir, fmt)
+    tasks = [(src, dest, fmt, save_args) for src, dest in plan
+             if force or not is_up_to_date(src, dest)]
+    skipped = len(plan) - len(tasks)
     failed = 0
     for ok, message in _run_tasks(tasks, resolve_jobs(jobs, len(tasks))):
         failed += not ok
         print(f"  {'OK   ' if ok else 'ERROR'}  {message}")
-    print(f"\nProcesados: {len(tasks) - failed} | Fallidos: {failed}")
+    print(f"\nProcesados: {len(tasks) - failed} | Omitidos: {skipped} | Fallidos: {failed}")
+    if skipped:
+        print("(omitidos: ya estaban convertidos; usa --force para rehacerlos)")
     return 1 if failed else 0
 
 
@@ -367,6 +387,8 @@ def build_parser():
     for name in ("convert", "compress"):
         sub.choices[name].add_argument("--jobs", type=_positive_int, metavar="N",
                                        help="Procesos en paralelo (por defecto: todos los nucleos)")
+        sub.choices[name].add_argument("--force", action="store_true",
+                                       help="Reconvertir aunque el destino ya este actualizado")
     for name in ("rename", "clean"):
         sub.choices[name].add_argument("--ext", type=_ext, default=".mp4")
         sub.choices[name].add_argument("--dry-run", action="store_true", help="Mostrar sin mover nada")
@@ -383,10 +405,10 @@ def main(argv=None):
             return 0
     if args.command == "convert":
         return convert_images(args.in_dir, args.out_dir, args.fmt, args.source, args.quality, args.lossless,
-                              jobs=args.jobs)
+                              jobs=args.jobs, force=args.force)
     if args.command == "compress":
         return convert_images(args.in_dir, args.out_dir, "png", "png", compress_level=args.level,
-                              jobs=args.jobs)
+                              jobs=args.jobs, force=args.force)
     if args.command == "rename":
         return rename_videos(args.in_dir, args.out_dir, args.start, args.ext, args.dry_run)
     return clean_videos(args.in_dir, args.out_dir, args.prefix, args.ext, args.dry_run)
