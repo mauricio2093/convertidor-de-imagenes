@@ -154,7 +154,8 @@ def plan_outputs(files, out_dir, fmt):
 def is_up_to_date(src, dest):
     """El destino existe y no es mas antiguo que el origen."""
     try:
-        return dest.stat().st_mtime >= src.stat().st_mtime
+        # Si origen y destino son el mismo archivo no se omite: debe reportarse como error
+        return not dest.samefile(src) and dest.stat().st_mtime >= src.stat().st_mtime
     except OSError:
         return False
 
