@@ -107,6 +107,17 @@ def _prepare(img, fmt, Image):
     return img
 
 
+def _shrink(img, max_size, Image):
+    """Limita el lado mas largo a max_size manteniendo proporcion; nunca agranda."""
+    if max(img.size) <= max_size:
+        return img
+    if img.mode in ("P", "1"):
+        # Estos modos solo admiten vecino mas cercano; pasar a color real para reducir bien
+        img = img.convert("RGBA" if _has_alpha(img) else "RGB")
+    img.thumbnail((max_size, max_size), Image.LANCZOS)
+    return img
+
+
 def _cpu_count():
     if hasattr(os, "sched_getaffinity"):
         return len(os.sched_getaffinity(0)) or 1
@@ -147,7 +158,7 @@ def is_up_to_date(src, dest):
 
 def _convert_one(task):
     """Convierte un archivo; corre en un worker, asi que no decide nombres ni comparte estado."""
-    src, dest, fmt, save_args = task
+    src, dest, fmt, save_args, max_size = task
     try:
         from PIL import Image, ImageOps
         if dest.resolve() == src.resolve():
@@ -157,8 +168,13 @@ def _convert_one(task):
         partial = dest.with_name(dest.name + ".part")
         try:
             with Image.open(src) as img:
-                img = ImageOps.exif_transpose(img)
-                _prepare(img, fmt, Image).save(partial, fmt.upper(), **save_args)
+                if max_size and img.format == "JPEG":
+                    # Decodificar ya reducido (con margen x2 para no perder calidad)
+                    img.draft(None, (max_size * 2, max_size * 2))
+                img = _prepare(ImageOps.exif_transpose(img), fmt, Image)
+                if max_size:
+                    img = _shrink(img, max_size, Image)
+                img.save(partial, fmt.upper(), **save_args)
             os.replace(partial, dest)
         finally:
             partial.unlink(missing_ok=True)
@@ -195,7 +211,7 @@ def _run_tasks(tasks, jobs):
 
 
 def convert_images(in_dir, out_dir, fmt, source="any", quality=DEFAULT_QUALITY,
-                   lossless=False, compress_level=9, jobs=None, force=False):
+                   lossless=False, compress_level=9, jobs=None, force=False, max_size=None):
     _load_pillow()
     exts = SOURCE_EXTS[source]
     if source == "any":
@@ -215,7 +231,7 @@ def convert_images(in_dir, out_dir, fmt, source="any", quality=DEFAULT_QUALITY,
         save_args = {"optimize": True, "compress_level": compress_level}
 
     plan = plan_outputs(files, out_dir, fmt)
-    tasks = [(src, dest, fmt, save_args) for src, dest in plan
+    tasks = [(src, dest, fmt, save_args, max_size) for src, dest in plan
              if force or not is_up_to_date(src, dest)]
     skipped = len(plan) - len(tasks)
     failed = 0
@@ -387,6 +403,8 @@ def build_parser():
     for name in ("convert", "compress"):
         sub.choices[name].add_argument("--jobs", type=_positive_int, metavar="N",
                                        help="Procesos en paralelo (por defecto: todos los nucleos)")
+        sub.choices[name].add_argument("--max-size", type=_positive_int, metavar="PX",
+                                       help="Lado mas largo maximo en pixeles (nunca agranda)")
         sub.choices[name].add_argument("--force", action="store_true",
                                        help="Reconvertir aunque el destino ya este actualizado")
     for name in ("rename", "clean"):
@@ -405,10 +423,10 @@ def main(argv=None):
             return 0
     if args.command == "convert":
         return convert_images(args.in_dir, args.out_dir, args.fmt, args.source, args.quality, args.lossless,
-                              jobs=args.jobs, force=args.force)
+                              jobs=args.jobs, force=args.force, max_size=args.max_size)
     if args.command == "compress":
         return convert_images(args.in_dir, args.out_dir, "png", "png", compress_level=args.level,
-                              jobs=args.jobs, force=args.force)
+                              jobs=args.jobs, force=args.force, max_size=args.max_size)
     if args.command == "rename":
         return rename_videos(args.in_dir, args.out_dir, args.start, args.ext, args.dry_run)
     return clean_videos(args.in_dir, args.out_dir, args.prefix, args.ext, args.dry_run)
