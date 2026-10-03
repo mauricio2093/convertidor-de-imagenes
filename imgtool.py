@@ -3,6 +3,7 @@
 Sin argumentos abre un menu interactivo. Con argumentos:
 
     python imgtool.py convert --to webp --from png --quality 85
+    python imgtool.py convert --to avif --max-size 1920 --jobs 8
     python imgtool.py compress
     python imgtool.py rename --dry-run
     python imgtool.py clean --dry-run
@@ -477,6 +478,14 @@ def main(argv=None):
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
+    try:
+        return _run_command(args)
+    except KeyboardInterrupt:
+        print("\nCancelado.")
+        return 130
+
+
+def _run_command(args):
     if args.command == "convert":
         return convert_images(args.in_dir, args.out_dir, args.fmt, args.source, args.quality, args.lossless,
                               jobs=args.jobs, force=args.force, max_size=args.max_size)
