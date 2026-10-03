@@ -254,7 +254,7 @@ def convert_images(in_dir, out_dir, fmt, source="any", quality=None,
         print(f"  {'OK   ' if ok else 'ERROR'}  {message}")
     print(f"\nProcesados: {len(tasks) - failed} | Omitidos: {skipped} | Fallidos: {failed}")
     if skipped:
-        print("(omitidos: ya estaban convertidos; usa --force para rehacerlos)")
+        print("(omitidos: ya estaban convertidos; para rehacerlos usa --force o 'Rehacer' en el menu)")
     return 1 if failed else 0
 
 
@@ -308,15 +308,34 @@ def clean_videos(in_dir, out_dir, prefix=DEFAULT_PREFIX, ext=".mp4", dry_run=Fal
 
 MENU = """
 ========== imgtool ==========
- 1) PNG -> JPEG
- 2) PNG -> WEBP
- 3) JPG/JPEG -> WEBP
- 4) Cualquier imagen -> WEBP
- 5) Comprimir PNG (PNG -> PNG)
- 6) Numerar videos        (videoIn  -> videoOut)
- 7) Limpiar nombres video (videoOut -> videoOut2)
+ 1) Convertir imagenes    (imgIn    -> imgOut)
+ 2) Comprimir PNG         (imgIn    -> imgOut)
+ 3) Numerar videos        (videoIn  -> videoOut)
+ 4) Limpiar nombres video (videoOut -> videoOut2)
  0) Salir
 """
+FORMAT_MENU = {"1": "jpeg", "2": "webp", "3": "avif", "4": "png"}
+SOURCE_MENU = {"1": "any", "2": "png", "3": "jpeg"}
+
+
+def _ask_choice(prompt, options, default=None):
+    while True:
+        raw = input(prompt).strip()
+        if not raw and default is not None:
+            return default
+        if raw in options:
+            return options[raw]
+        print("  Opcion no valida.")
+
+
+def _ask_max_size():
+    while True:
+        raw = input("Tamano maximo del lado mas largo, en px [Enter = original]: ").strip()
+        if not raw:
+            return None
+        if raw.isdigit() and int(raw) >= 1:
+            return int(raw)
+        print("  Escribe un numero de pixeles, o Enter para no redimensionar.")
 
 
 def _ask_int(prompt, default, low, high):
@@ -339,6 +358,21 @@ def _preview_then_apply(func, *args):
         func(*args, dry_run=False)
 
 
+def _menu_convert():
+    print("Formato destino:\n  1) JPEG\n  2) WebP\n  3) AVIF\n  4) PNG")
+    fmt = _ask_choice("Formato: ", FORMAT_MENU)
+    print("Imagenes de origen:\n  1) Todas\n  2) Solo PNG\n  3) Solo JPG/JPEG")
+    source = _ask_choice("Origen [1]: ", SOURCE_MENU, default="any")
+    lossless = fmt == "webp" and _ask_yes("¿Sin perdida (lossless)?")
+    quality = None
+    if fmt != "png" and not lossless:
+        quality = _ask_int("Calidad (1-100)", DEFAULT_QUALITY[fmt], 1, 100)
+    max_size = _ask_max_size()
+    force = _ask_yes("¿Rehacer las que ya estan convertidas?")
+    print()
+    convert_images(IMG_IN, IMG_OUT, fmt, source, quality, lossless, max_size=max_size, force=force)
+
+
 def menu():
     interrupted = False
     while True:
@@ -357,18 +391,16 @@ def menu():
         if choice == "0":
             return 0
         if choice == "1":
-            convert_images(IMG_IN, IMG_OUT, "jpeg", "png", _ask_int("Calidad (1-100)", DEFAULT_QUALITY["jpeg"], 1, 100))
-        elif choice in ("2", "3", "4"):
-            source = {"2": "png", "3": "jpeg", "4": "any"}[choice]
-            lossless = _ask_yes("¿Sin perdida (lossless)?")
-            quality = None if lossless else _ask_int("Calidad (1-100)", DEFAULT_QUALITY["webp"], 1, 100)
-            convert_images(IMG_IN, IMG_OUT, "webp", source, quality, lossless)
-        elif choice == "5":
-            convert_images(IMG_IN, IMG_OUT, "png", "png")
-        elif choice == "6":
+            _menu_convert()
+        elif choice == "2":
+            max_size = _ask_max_size()
+            force = _ask_yes("¿Rehacer las que ya estan comprimidas?")
+            print()
+            convert_images(IMG_IN, IMG_OUT, "png", "png", max_size=max_size, force=force)
+        elif choice == "3":
             start = _ask_int("Numero inicial", _next_start(VIDEO_OUT, ".mp4"), 0, 10**6)
             _preview_then_apply(rename_videos, VIDEO_IN, VIDEO_OUT, start, ".mp4")
-        elif choice == "7":
+        elif choice == "4":
             prefix = input(f"Prefijo a quitar [{DEFAULT_PREFIX}]: ").strip() or DEFAULT_PREFIX
             _preview_then_apply(clean_videos, VIDEO_OUT, VIDEO_OUT2, prefix, ".mp4")
         else:
