@@ -1,5 +1,6 @@
 # Python cache and compiled files
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *$py.class
 
@@ -23,6 +24,9 @@ pip-wheel-metadata/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Benchmarks locales (dataset y resultados)
+.bench/
 
 # Logs
 *.log
